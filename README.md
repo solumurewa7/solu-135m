@@ -2,7 +2,7 @@
 
 A 135M-parameter decoder-only transformer language model, built from scratch in PyTorch.
 
-Solu-135M mirrors the architecture of [SmolLM-135M](https://huggingface.co/HuggingFaceTB/SmolLM-135M): grouped-query attention, rotary position embeddings, RMSNorm, SwiGLU, and tied embeddings. Everything here (the model, the data pipeline, the training loop) is hand-written to understand how a modern LLM works end to end, using PyTorch only for tensor ops and autograd rather than any high-level model library.
+Solu-135M implements a modern LLM architecture end to end: grouped-query attention, rotary position embeddings, RMSNorm, SwiGLU, and tied embeddings. The model, the data pipeline, and the training loop are all hand-written. PyTorch is used for tensor operations and autograd only, not for any high-level model, attention, or transformer-block abstractions. The goal is to understand how every piece of a current-generation language model actually works by building it rather than importing it.
 
 > **Status: work in progress.** The architecture and training pipeline are complete and verified. The full pretraining run has not been done yet, so there are no trained weights or benchmark numbers in this repo yet. The [roadmap](#roadmap) below tracks what's done and what's next.
 
@@ -21,7 +21,7 @@ Solu-135M mirrors the architecture of [SmolLM-135M](https://huggingface.co/Huggi
 
 ## Architecture
 
-Verified parameter count: **134,515,008** (matches SmolLM-135M exactly).
+Parameter count: **134,515,008**.
 
 | Component | Value |
 |-----------|-------|
@@ -31,7 +31,7 @@ Verified parameter count: **134,515,008** (matches SmolLM-135M exactly).
 | Query heads | 9 |
 | KV heads | 3 (grouped-query attention) |
 | Head dim | 64 |
-| Vocab size | 49,152 (SmolLM tokenizer) |
+| Vocab size | 49,152 |
 | Context length | 1024 |
 | Position encoding | RoPE (θ=10000, split-half pairing) |
 | Normalization | RMSNorm (pre-norm, eps=1e-5) |
@@ -39,21 +39,26 @@ Verified parameter count: **134,515,008** (matches SmolLM-135M exactly).
 | Embeddings | Tied (input embedding reused as output projection) |
 
 **Design notes**
-- **Grouped-query attention (GQA):** 9 query heads share 3 KV heads, cutting the KV projection size while keeping query expressiveness.
-- **RoPE in float32:** the rotary computation is forced to float32 even under bfloat16 autocast, because bfloat16 loses positional precision at longer context lengths.
-- **Flash attention, switchable:** attention runs through `F.scaled_dot_product_attention` by default, but a hand-written attention path is kept alongside it (`use_flash=False`) and verified to produce identical output. The hand-built version is there to make the mechanism legible, not for speed.
-- **GPT-2-style init:** all linear/embedding weights init at std 0.02; residual-writing projections are scaled by `0.02 / sqrt(2 * n_layers)` to keep activations stable through 30 residual additions.
+- **Grouped-query attention (GQA):** 9 query heads share 3 KV heads, cutting the key/value projection size while keeping query expressiveness. The repository keeps both a hand-written attention path and a fast path through `F.scaled_dot_product_attention`, verified to produce identical output; the hand-written version exists to make the mechanism legible, the fast path is used for training.
+- **RoPE in float32:** the rotary computation is forced to float32 even under bfloat16 autocast, because bfloat16 loses positional precision at longer context lengths. This was a deliberate fix, not the default.
+- **GPT-2-style initialization:** all linear and embedding weights init at std 0.02; the residual-writing projections are additionally scaled by `0.02 / sqrt(2 * n_layers)` to keep activation variance stable across 30 residual additions, which prevents the loss blow-up that an unscaled init produces at this depth.
+- **Tied embeddings:** the input embedding table is reused as the output projection, saving ~28M parameters.
 
 ---
 
 ## Data
 
-Pretraining data is a blend, streamed from Hugging Face and tokenized with the SmolLM tokenizer:
+Pretraining data is a blend, streamed from Hugging Face and tokenized with the SmolLM BPE tokenizer (49,152-token vocabulary):
 
 - **~90% text:** [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) (`sample-10BT`) — educational web text, for language and general knowledge.
 - **~10% code:** [CodeParrot-clean](https://huggingface.co/datasets/codeparrot/codeparrot-clean) — Python source, for code familiarity.
 
-The blend is controlled **by token count**, not document count, so the ratio is accurate regardless of how long individual documents are. The pipeline also filters out pathologically long code files, shuffles at the document level (never within a document, which would destroy the next-token signal), holds out a contiguous 10% validation split with no leakage, and caches the tokenized array to disk so tokenization happens once.
+The pipeline makes several engineering choices that matter at scale:
+- **Blend controlled by token count, not document count,** so the ratio stays accurate regardless of how long individual documents are.
+- **Length filtering** on code files, so a handful of huge auto-generated files can't dominate the code portion.
+- **Document-level shuffling** (never within a document, which would destroy the next-token prediction signal).
+- **Contiguous validation split** (held-out tail, so no document leaks between train and val).
+- **On-disk token cache,** so tokenization runs once and the expensive step never repeats across training runs.
 
 ---
 
@@ -64,11 +69,11 @@ The training loop (`train/train.py`) includes:
 - **LR schedule:** linear warmup then cosine decay to a 10% floor.
 - **Gradient clipping** at max-norm 1.0.
 - **Mixed precision:** bfloat16 autocast (no gradient scaler needed with bf16).
-- **Flash attention** and **`torch.compile`** for throughput (compile falls back safely where unsupported).
-- **Checkpointing:** a rolling checkpoint for crash recovery plus a separate best-by-validation-loss checkpoint, both compile-safe.
+- **Flash attention** and **`torch.compile`** for throughput, both with safe fallback where unsupported.
+- **Checkpointing:** a rolling checkpoint for crash recovery plus a separate best-by-validation-loss checkpoint, both written in a way that survives `torch.compile`'s weight renaming.
 - **Logging:** TensorBoard scalars for train loss, val loss, learning rate, and gradient norm.
 
-Planned run: ~10B tokens on a single rented cloud GPU, with GPT-2 124M as the benchmark comparison point.
+Planned run: ~10B tokens on a single rented cloud GPU, benchmarked against GPT-2 124M.
 
 ---
 
@@ -90,7 +95,7 @@ The config in `train/data_pipeline.py` is set for the full run (block size 1024,
 
 ## Roadmap
 
-- [x] Model architecture (verified against SmolLM-135M, exact param count)
+- [x] Model architecture (hand-written, verified forward pass and parameter count)
 - [x] Data pipeline (streaming, blend, shuffle, train/val split, caching)
 - [x] Training loop (LR schedule, clipping, mixed precision, checkpointing, logging)
 - [ ] Full pretraining run on cloud GPU
