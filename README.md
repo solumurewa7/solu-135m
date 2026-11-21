@@ -4,7 +4,7 @@ A 135M-parameter decoder-only transformer language model, built from scratch in 
 
 Solu-135M is the language brain for a personal desk assistant. The goal is a small, efficient model that runs locally on constrained hardware, understands a spoken request, and turns it into a structured action: answer directly, trigger a tool, or hand a harder task off to a larger model. Everything here (the model, the data pipeline, the training loop) is hand-written. PyTorch provides tensor ops and autograd only, with no high-level model, attention, or transformer-block libraries. The point is to understand and control every part of the model, and to keep it small enough to deploy at the edge rather than in the cloud.
 
-> **Status: work in progress.** The architecture and training pipeline are complete and verified. The base pretraining run has not been done yet, so there are no trained weights or benchmark numbers in this repo yet. The [roadmap](#roadmap) below tracks what's done and what's next.
+> **Status: work in progress.** The architecture and training pipeline are complete and verified, and the throughput/cost of the full run has been measured on an A100. The base pretraining run itself has not been done yet, so there are no trained weights or benchmark numbers in this repo yet. The [roadmap](#roadmap) below tracks what's done and what's next.
 
 ---
 
@@ -83,6 +83,29 @@ Planned base run: ~10B tokens on a single rented cloud GPU, benchmarked against 
 
 ---
 
+## Throughput test
+
+Before committing to the full run, I measured real throughput and cost on a rented **NVIDIA A100 SXM 80GB**, at the full training config (block size 1024, batch size 8), with torch.compile, bfloat16, flash attention, and TF32 all active.
+
+| Metric | Result |
+|--------|--------|
+| Throughput | **~100,800 tokens/sec** |
+| Peak GPU memory | **11.9 GB of 80 GB** |
+| First-step loss | 10.90 (matches the theoretical ln(49,152) ≈ 10.82 for an untrained model) |
+| Gradient norm | early spikes clipped, then stable near 1.8–2.0 |
+| OOM | none |
+
+**Cost of the full run (at ~$2.19/hr):**
+
+| Tokens | GPU-hours | Est. cost |
+|--------|-----------|-----------|
+| 6B | ~16.5 | ~$36 |
+| 10B | ~27.6 | ~$60 |
+
+The 10B-token target, which is where small models start showing real benchmark signal, costs around $60 of compute. The ~12 GB peak on an 80 GB card also leaves large headroom to raise the batch size for better utilization on the full run.
+
+---
+
 ## Running it
 
 ```bash
@@ -104,6 +127,7 @@ The config in `train/data_pipeline.py` is set for the full run (block size 1024,
 - [x] Model architecture (hand-written, verified forward pass and parameter count)
 - [x] Data pipeline (streaming, blend, shuffle, train/val split, caching)
 - [x] Training loop (LR schedule, clipping, mixed precision, checkpointing, logging)
+- [x] Throughput + cost measured on an A100 (~100.8k tokens/sec; 10B tokens ≈ $60)
 - [ ] Base pretraining run on cloud GPU
 - [ ] Evaluation vs GPT-2 124M + loss curves posted here
 - [ ] Trained weights published to the Hugging Face Hub
