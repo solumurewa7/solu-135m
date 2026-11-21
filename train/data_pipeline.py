@@ -20,7 +20,7 @@ import random
 TOKEN_FILE = "tokens.npy"
 MAX_DOCS = 500              # text documents to pull (raise for the full run)
 BLOCK_SIZE = 1024          # sequence length  (use 256 for small local tests)
-BATCH_SIZE = 8             # sequences per batch (use 4 for small local tests)
+BATCH_SIZE = 32            # sequences per batch (use 4 for small local tests)
 CODE_FRACTION = 0.1        # target share of code tokens in the blend
 MAX_CODE_DOC_TOKENS = 2048 # drop code files longer than this (keeps diversity)
 VAL_FRACTION = 0.1         # tail fraction held out for validation

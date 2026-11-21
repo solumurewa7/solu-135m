@@ -38,9 +38,9 @@ torch._logging.set_logs(dynamo=logging.ERROR)
 
 CHECKPOINT_FILE = "checkpoint.pt"
 BEST_CHECKPOINT_FILE = "best_checkpoint.pt"
-TOTAL_STEPS = 50
-SAVE_EVERY = 25
-WARMUP_STEPS = 10
+TOTAL_STEPS = 305000    # ~10B tokens at batch 32, block 1024 (test value: 50)
+SAVE_EVERY = 2000       # checkpoint ~every 11 min on an A100 (test value: 25)
+WARMUP_STEPS = 2000     # ~0.7% of total steps (test value: 10)
 LR_DECAY_STEPS = TOTAL_STEPS
 MAX_LR = 3e-4
 MAX_GRAD_NORM = 1.0
