@@ -35,3 +35,11 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+
+# ---- Training run outputs (regenerated each run; graphs built locally) ----
+metrics.csv
+gpu_metrics.csv
+graphs/
+build.log
+train.log
+gpu_logger.log

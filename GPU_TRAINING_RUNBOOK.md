@@ -46,6 +46,26 @@ This should print your shard counts in a second or two. Because the shards
 already exist, `build_shards()` skips rebuilding. If this hangs or tries to
 download, something's wrong with the volume, not the code.
 
+## 3b. Run the smoke test (do this once, ideally on the CPU box)
+
+Before spending GPU time, prove the whole training loop runs end to end against
+the real shards. This is cheap insurance: it catches a dumb bug (bad shape, bad
+CSV column, dtype mismatch) in a minute on CPU instead of after you've rented an
+A100 and waited through torch.compile.
+
+```bash
+python train/smoke_test_train.py
+```
+It runs ~10 real steps with a tiny model on CPU and should end with
+`SMOKE TEST PASSED`. The loss will sit around 10.8 and not drop; that's correct
+(a toy model on a few steps learns nothing, it only proves the machinery works).
+If it raises, fix that before touching a GPU. If your shards live somewhere other
+than `shards/`, set `SOLU_SHARD_DIR` to that folder first.
+
+> This is ideal to run on the CPU tokenizing box the moment the shards finish,
+> while that box is still up, since it already has transformers/datasets
+> installed and the shards right there.
+
 ## 4. Start the GPU logger FIRST, then training
 
 Order matters: start the hardware logger a moment before training so it captures
