@@ -3,3 +3,7 @@ transformers
 datasets
 numpy
 tensorboard
+
+# Local-only (for train/make_graphs.py, run on your laptop after training).
+# Not needed on the GPU box, so it's listed separately to keep that install lean.
+matplotlib

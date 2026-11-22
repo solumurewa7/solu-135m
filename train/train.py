@@ -20,6 +20,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import math
+import time
+import csv
 import logging
 import torch
 import torch.nn.functional as F
@@ -45,6 +47,8 @@ LR_DECAY_STEPS = TOTAL_STEPS
 MAX_LR = 3e-4
 MAX_GRAD_NORM = 1.0
 USE_COMPILE = True
+LOG_EVERY = 5                 # how often to measure/log metrics
+METRICS_CSV = "metrics.csv"   # permanent per-step metrics log for later graphing
 
 # ----- Setup ---------------------------------------------------------------
 
@@ -72,7 +76,20 @@ use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 autocast_dtype = torch.bfloat16 if use_bf16 else torch.float32
 print("bfloat16 supported:", use_bf16)
 
-log_steps, log_train_loss, log_val_loss = [], [], []
+# tokens processed per optimizer step (used for tokens/sec)
+from data_pipeline import BLOCK_SIZE, BATCH_SIZE
+tokens_per_step = BLOCK_SIZE * BATCH_SIZE
+
+# Open the metrics CSV (append if resuming, write header if new).
+_csv_is_new = not os.path.exists(METRICS_CSV)
+metrics_file = open(METRICS_CSV, "a", newline="")
+metrics_writer = csv.writer(metrics_file)
+if _csv_is_new:
+    metrics_writer.writerow([
+        "step", "train_loss", "val_loss", "train_perplexity", "val_perplexity",
+        "lr", "grad_norm", "tokens_per_sec", "step_time_s", "gpu_mem_gb",
+    ])
+    metrics_file.flush()
 
 # ----- Helpers -------------------------------------------------------------
 
@@ -154,6 +171,12 @@ if USE_COMPILE:
         print(f"torch.compile failed, running uncompiled: {e}")
 
 for step in range(start_step, TOTAL_STEPS):
+    # Time the step. synchronize() makes the GPU-side timing honest (the GPU
+    # runs asynchronously, so without it we'd time Python, not the GPU work).
+    if device == "cuda":
+        torch.cuda.synchronize()
+    t_step_start = time.time()
+
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
@@ -170,24 +193,50 @@ for step in range(start_step, TOTAL_STEPS):
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
     optimizer.step()
 
-    if step % 5 == 0:
+    if device == "cuda":
+        torch.cuda.synchronize()
+    step_time = time.time() - t_step_start
+    tokens_per_sec = tokens_per_step / step_time
+
+    if step % LOG_EVERY == 0:
         val_loss = estimate_val_loss()
-        print(f"step {step}: train loss {loss.item():.4f} | val loss {val_loss:.4f} "
-              f"| lr {lr:.6f} | grad_norm {grad_norm:.2f}")
+        train_loss = loss.item()
+        gn = grad_norm.item() if hasattr(grad_norm, "item") else float(grad_norm)
+
+        # perplexity = exp(loss); guard against overflow very early in training.
+        train_ppl = math.exp(min(train_loss, 20))
+        val_ppl = math.exp(min(val_loss, 20))
+        gpu_mem_gb = torch.cuda.max_memory_allocated() / 1e9 if device == "cuda" else 0.0
+
+        print(f"step {step}: train {train_loss:.4f} | val {val_loss:.4f} "
+              f"| lr {lr:.6f} | gnorm {gn:.2f} "
+              f"| {tokens_per_sec:,.0f} tok/s | {gpu_mem_gb:.1f} GB")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             save_checkpoint(step, best_val_loss, BEST_CHECKPOINT_FILE)
 
-        log_steps.append(step)
-        log_train_loss.append(loss.item())
-        log_val_loss.append(val_loss)
-        writer.add_scalar("loss/train", loss.item(), step)
+        # TensorBoard (live monitoring)
+        writer.add_scalar("loss/train", train_loss, step)
         writer.add_scalar("loss/val", val_loss, step)
+        writer.add_scalar("perplexity/train", train_ppl, step)
+        writer.add_scalar("perplexity/val", val_ppl, step)
         writer.add_scalar("lr", lr, step)
-        writer.add_scalar("grad_norm", grad_norm, step)
+        writer.add_scalar("grad_norm", gn, step)
+        writer.add_scalar("throughput/tokens_per_sec", tokens_per_sec, step)
+        writer.add_scalar("throughput/step_time_s", step_time, step)
+        writer.add_scalar("gpu_mem_gb", gpu_mem_gb, step)
+
+        # CSV (permanent record for graphing later)
+        metrics_writer.writerow([
+            step, f"{train_loss:.6f}", f"{val_loss:.6f}",
+            f"{train_ppl:.4f}", f"{val_ppl:.4f}", f"{lr:.8f}", f"{gn:.4f}",
+            f"{tokens_per_sec:.1f}", f"{step_time:.5f}", f"{gpu_mem_gb:.3f}",
+        ])
+        metrics_file.flush()   # flush so a crash doesn't lose logged rows
 
     if step % SAVE_EVERY == 0 and step > 0:
         save_checkpoint(step, best_val_loss)
 
 writer.close()
+metrics_file.close()
