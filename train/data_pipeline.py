@@ -152,9 +152,12 @@ def get_batch(split="train"):
     return torch.stack(x_list), torch.stack(y_list)
 
 
-# Build (if needed) and memory-map the shards on import.
-build_shards()
-train_shards, val_shards = load_shards()
+# Build (if needed) and memory-map the shards on import, unless a caller sets
+# SOLU_SKIP_IMPORT_BUILD=1 (used by tests that configure and build themselves).
+train_shards, val_shards = None, None
+if os.environ.get("SOLU_SKIP_IMPORT_BUILD") != "1":
+    build_shards()
+    train_shards, val_shards = load_shards()
 
 
 if __name__ == "__main__":
